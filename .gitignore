@@ -1,0 +1,7 @@
+cointegration_data/
+cointegration_results/
+distance_results/
+distance_data/
+.ipynb_checkpoints/
+
+*.csv
