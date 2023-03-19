@@ -27,10 +27,18 @@ percentage_costs = 0
 # set whether (0) or not (2) positive trading volume is required for opening/closing a pair
 trade_req = 0
 # Choose how much loss we are willing to accePt on a given pair, compared to 1, i.e, 0.93 = 7% stop loss
-Stop_loss = float('-inf')
+Stop_loss = 0.95
+
+if Stop_loss != float('-inf'):
+    stop_dir = 100 - (Stop_loss * 100)
 # Choose how much gain we are willing to accePt on a given pair, compared to 1, i.e 1.10 = 10% stop gain
 Stop_gain = float('inf')
 s1218 = 1  # listing req. (look ahead): 12+6 months (=1)
+
+opening_threshold = 1.5
+closing_threshold = 0.75
+
+duration_limit = float('inf')
 
 avg_price_dev = np.zeros(
     (days-sum(periods.iloc[0:2, 0].to_list()), no_pairs*2))
@@ -231,11 +239,16 @@ while big_loop < (years * 2 - 2):
         pairs_opened = 0
         new_pairs_opened = 0
         lag = 0
+        can_trade = True
+        last_operation = 0
+
 
         std_limit = np.std(IPt[0:twelve_months, first_col] -
                            IPt[0:twelve_months, second_col])  # standard deviation
 
         print(f"Std limit: {std_limit}")
+        spread = IPt[0:twelve_months, first_col] - IPt[0:twelve_months, second_col]
+        #print(f"Spread series: {spread}")
 
         # Fixed volatility estimated in the 12 months period. Doing the calculation one pair at a time
         # Presets all variables for each pair
@@ -255,6 +268,10 @@ while big_loop < (years * 2 - 2):
                 break """
 
             if daylag == 0:  # w/o one day delay
+                if not can_trade:
+                    if (last_operation == 1 and (IPt[j-i, first_col]-IPt[j-i, second_col]) <= closing_threshold*std_limit) or (last_operation == -1 and (IPt[j-i, first_col]-IPt[j-i, second_col]) >= -closing_threshold*std_limit):
+                        can_trade = True
+
                 if pairs_opened == -1:  # pairs opened: long 1st, short 2nd stock
                     # print("Pair is long on 1st")
                     # If a sign to open has been given, then calcule the returns
@@ -300,8 +317,22 @@ while big_loop < (years * 2 - 2):
                 else:
                     Rpair[counter, p] = 0  # closed (this code not necessary)
 
-                if ((pairs_opened == 1 and (IPt[j-i, first_col]-IPt[j-i, second_col]) <= 0) or (Rcum_ret[-1] <= Stop_loss) or (Rcum_ret[-1] >= Stop_gain)
-                        or (pairs_opened == -1 and (IPt[j-i, first_col]-IPt[j-i, second_col]) >= 0)) and ((trade_req + (Vt.iloc[j, first_col] > 0) + (Vt.iloc[j, second_col] > 0)) > 1):
+                if ((pairs_opened == 1 and (IPt[j-i, first_col]-IPt[j-i, second_col]) <= closing_threshold*std_limit) or (counter_ret > duration_limit) or (Rcum_ret[-1] < Stop_loss) or (Rcum_ret[-1] >= Stop_gain)
+                        or (pairs_opened == -1 and (IPt[j-i, first_col]-IPt[j-i, second_col]) >= -closing_threshold*std_limit)) and ((trade_req + (Vt.iloc[j, first_col] > 0) + (Vt.iloc[j, second_col] > 0)) > 1):
+                    #print(f"Closing position {pairs_opened}. Price diff: {IPt[j-i, first_col]-IPt[j-i, second_col]}")
+                    
+                    converged = True
+
+                    if Rcum_ret[-1] < Stop_loss:
+                        Rcum_ret[-1] = Stop_loss
+                        converged = False
+                        can_trade = False
+                        last_operation = pairs_opened
+
+                    if counter_ret > duration_limit:
+                        converged = False
+                        can_trade = False
+                        last_operation = pairs_opened
 
                     pairs_opened = 0  # close pairs: prices cross
                     # when pair is closed reset lag (it serves for paying tc)
@@ -320,11 +351,13 @@ while big_loop < (years * 2 - 2):
                         "S2": pairs[p]['s2_ticker'],
                         "Pair": f"{pairs[p]['s1_ticker']}-{pairs[p]['s2_ticker']}",
                         "Return": Rcum_ret[-1],
-                        "Converged": True
+                        "Converged": converged
                     })
 
-                elif (pairs_opened == 0) and (+IPt[j-i, first_col]-IPt[j-i, second_col] > 2.0*std_limit) and ((trade_req + (Vt.iloc[j, first_col] > 0) + (Vt.iloc[j, second_col] > 0)) > 1):
+                    counter_ret = 1
 
+                elif can_trade and (pairs_opened == 0) and (+IPt[j-i, first_col]-IPt[j-i, second_col] > opening_threshold*std_limit) and ((trade_req + (Vt.iloc[j, first_col] > 0) + (Vt.iloc[j, second_col] > 0)) > 1):
+                    #print(f"Opening short position. Price diff: {IPt[j-i, first_col]-IPt[j-i, second_col]} | Threshold: {1.5*std_limit}")
                     if pairs_opened == 0:  # record dev (and time) at open
                         Rcum = np.zeros((six_months, 1))
                         counter_ret = 1
@@ -337,8 +370,8 @@ while big_loop < (years * 2 - 2):
                     lag = lag + 1  # - Lag was 0. On the next loop C will be paid
                     wi = [1, 1]
 
-                elif (pairs_opened == 0) and (-IPt[j-i, first_col]+IPt[j-i, second_col] > 2.0*std_limit) and ((trade_req + (Vt.iloc[j, first_col] > 0) + (Vt.iloc[j, second_col] > 0)) > 1):
-
+                elif can_trade and (pairs_opened == 0) and (IPt[j-i, first_col]-IPt[j-i, second_col] < -opening_threshold*std_limit) and ((trade_req + (Vt.iloc[j, first_col] > 0) + (Vt.iloc[j, second_col] > 0)) > 1):
+                    #print(f"Opening long position. Price diff: {IPt[j-i, first_col]-IPt[j-i, second_col]} | Threshold: {-1.5*std_limit}")
                     if pairs_opened == 0:  # record dev (and time) at open
                         Rcum = np.zeros((six_months, 1))
                         counter_ret = 1
@@ -553,11 +586,19 @@ while big_loop < (years * 2 - 2):
     Rp_vw_fi['Semester'][counter-six_months+1:counter+1] = int(big_loop)
     risk_free['Semester'][counter-six_months+1:counter+1] = int(big_loop)
 
-    Rp_ew_cc.to_csv("Rp_ew_cc.csv", index=False)
-    Rp_vw_fi.to_csv("Rp_vw_fi.csv", index=False)
-    pd.DataFrame(RmRf).to_csv("RmRf.csv", header=None, index=False)
-    risk_free.to_csv("risk_free.csv")
-    ret_acum_df.to_csv("ret_acum_df.csv")
+    if Stop_loss == float("-inf"):
+        Rp_ew_cc.to_csv("distance_results/duration_limit/Rp_ew_cc.csv", index=False)
+        Rp_vw_fi.to_csv("distance_results/duration_limit/Rp_vw_fi.csv", index=False)
+        pd.DataFrame(RmRf).to_csv("distance_results/duration_limit/RmRf.csv", header=None, index=False)
+        risk_free.to_csv("distance_results/duration_limit/risk_free.csv")
+        ret_acum_df.to_csv("distance_results/duration_limit/ret_acum_df.csv")
+    else:
+         
+        Rp_ew_cc.to_csv(f"distance_results/stop_{math.trunc(stop_dir)}/Rp_ew_cc.csv", index=False)
+        Rp_vw_fi.to_csv(f"distance_results/stop_{math.trunc(stop_dir)}/Rp_vw_fi.csv", index=False)
+        pd.DataFrame(RmRf).to_csv(f"distance_results/stop_{math.trunc(stop_dir)}/RmRf.csv", header=None, index=False)
+        risk_free.to_csv(f"distance_results/stop_{math.trunc(stop_dir)}/risk_free.csv")
+        ret_acum_df.to_csv(f"distance_results/stop_{math.trunc(stop_dir)}/ret_acum_df.csv")
 
     for i2 in range(0, no_pairs):
         if sum(avg_price_dev[counter-six_months+1:counter+1, i2] != 0) != 0:
@@ -572,4 +613,7 @@ while big_loop < (years * 2 - 2):
     big_loop = big_loop + 1
 
 operations_df = pd.DataFrame(operations)
-operations_df.to_csv("operations.csv")
+if Stop_loss == float('-inf'):
+    operations_df.to_csv(f"distance_results/duration_limit/operations.csv")
+else:
+    operations_df.to_csv(f"distance_results/stop_{math.trunc(stop_dir)}/operations.csv")
